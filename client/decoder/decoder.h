@@ -46,6 +46,11 @@ public:
 		vk::ImageLayout & current_layout;
 		vk::Semaphore semaphore = nullptr;
 		uint64_t * semaphore_val = nullptr;
+#ifdef WIVRN_USE_V4L2
+		// DMA-BUF images produced by V4L2 need explicit queue-family ownership
+		// transfers between Vulkan and the external media engine.
+		uint32_t foreign_queue_family = VK_QUEUE_FAMILY_IGNORED;
+#endif
 	};
 
 public:
