@@ -318,6 +318,10 @@ void hmd_traits::init()
 		}
 	}
 #else // not android
+#ifdef WIVRN_DEFAULT_CONTROLLER_PROFILE_STEAM_FRAME
+	controller_profile = "steam-frame";
+#endif
+
 	for (const auto & entry: std::filesystem::directory_iterator("/sys/class/drm"))
 	{
 		std::ifstream modes(entry.path() / "modes");

@@ -95,6 +95,14 @@ const std::unordered_map<std::string, std::string> input_mappings = {
 	{"b-button"              , "/input/b/click"          },
 	{"x-button"              , "/input/x/click"          },
 	{"y-button"              , "/input/y/click"          },
+	{"frame-dpad-up"         , "/input/dpad_up/click"    },
+	{"frame-dpad-down"       , "/input/dpad_down/click"  },
+	{"frame-dpad-left"       , "/input/dpad_left/click"  },
+	{"frame-dpad-right"      , "/input/dpad_right/click" },
+	{"frame-bumper"          , "/input/bumper/click"     },
+	{"frame-menu"            , "/input/menu/click"       },
+	{"frame-view"            , "/input/view/click"       },
+	{"frame-system"          , "/input/system/click"     },
 	{"thumbrest"             , "/input/thumbrest/touch"  },
 };
 // clang-format on
