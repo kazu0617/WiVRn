@@ -25,17 +25,51 @@
 #include "utils/i18n.h"
 #include "utils/overloaded.h"
 #include "utils/ranges.h"
+#include <cstdlib>
 #include <cstring>
 #include <entt/core/fwd.hpp>
 #include <magic_enum.hpp>
 #include <spdlog/spdlog.h>
+#include <string_view>
 #include <vulkan/vulkan_raii.hpp>
 #include <openxr/openxr.h>
 
 // TODO remove constants
 #include "constants.h"
 
+#ifndef WIVRN_SEPARATE_EYE_SWAPCHAINS
+#define WIVRN_SEPARATE_EYE_SWAPCHAINS 0
+#endif
+
 std::vector<scene::meta *> scene::scene_registry;
+
+bool stereo_eye_split_enabled()
+{
+	bool enabled = WIVRN_SEPARATE_EYE_SWAPCHAINS;
+	static bool invalid_override_logged = false;
+	static bool enabled_logged = false;
+
+	if (const char * value = std::getenv("WIVRN_STEREO_SEPARATE_EYE_SWAPCHAINS"))
+	{
+		const std::string_view override_value{value};
+		if (override_value == "1" or override_value == "on" or override_value == "true")
+			enabled = true;
+		else if (override_value == "0" or override_value == "off" or override_value == "false")
+			enabled = false;
+		else if (not invalid_override_logged)
+		{
+			spdlog::warn("Ignoring unrecognized WIVRN_STEREO_SEPARATE_EYE_SWAPCHAINS value; keeping the build default");
+			invalid_override_logged = true;
+		}
+	}
+
+	if (enabled and not enabled_logged)
+	{
+		spdlog::info("Per-eye swapchains enabled for controller projections (build default {})", bool(WIVRN_SEPARATE_EYE_SWAPCHAINS));
+		enabled_logged = true;
+	}
+	return enabled;
+}
 
 scene::~scene() {}
 
@@ -156,35 +190,49 @@ void scene::render_world(
         bool keep_depth_buffer,
         uint32_t layer_mask,
         XrColor4f clear_color,
-        bool render_debug_draws)
+        bool render_debug_draws,
+        bool separate_eye_swapchains)
 {
 	assert(views.size() <= layer::max_views);
 	beman::inplace_vector::inplace_vector<scene_renderer::frame_info, layer::max_views> frames;
 	beman::inplace_vector::inplace_vector<XrCompositionLayerProjectionView, layer::max_views> composition_layer_color;
 	beman::inplace_vector::inplace_vector<XrCompositionLayerDepthInfoKHR, layer::max_views> composition_layer_depth;
 
-	auto [color_swapchain, color_image] = [&]() -> std::tuple<XrSwapchain, vk::Image> {
-		xr::swapchain & color_swapchain = get_swapchain(swapchain_format, width, height, 1, views.size());
+	const bool use_separate_eye_swapchains = separate_eye_swapchains and views.size() > 1;
+	XrSwapchain color_swapchain = XR_NULL_HANDLE;
+	vk::Image color_image{};
+	XrSwapchain depth_swapchain = XR_NULL_HANDLE;
+	vk::Image depth_image{};
 
-		int color_image_index = color_swapchain.acquire();
-		vk::Image color_image = color_swapchain.image(color_image_index);
-		color_swapchain.wait();
-		return {color_swapchain, color_image};
-	}();
+	if (not use_separate_eye_swapchains)
+	{
+		auto [color_swapchain_handle, color_image_handle] = [&]() -> std::tuple<XrSwapchain, vk::Image> {
+			xr::swapchain & swapchain_ref = get_swapchain(swapchain_format, width, height, 1, views.size());
 
-	auto [depth_swapchain, depth_image] = [&]() -> std::pair<XrSwapchain, vk::Image> {
-		if (keep_depth_buffer)
-		{
-			xr::swapchain & depth_swapchain = get_swapchain(depth_format, width, height, 1, views.size());
+			int color_image_index = swapchain_ref.acquire();
+			vk::Image image = swapchain_ref.image(color_image_index);
+			swapchain_ref.wait();
+			return {swapchain_ref, image};
+		}();
+		color_swapchain = color_swapchain_handle;
+		color_image = color_image_handle;
 
-			int depth_image_index = depth_swapchain.acquire();
-			vk::Image depth_image = depth_swapchain.image(depth_image_index);
-			depth_swapchain.wait();
-			return {depth_swapchain, depth_image};
-		}
-		else
-			return {};
-	}();
+		auto [depth_swapchain_handle, depth_image_handle] = [&]() -> std::pair<XrSwapchain, vk::Image> {
+			if (keep_depth_buffer)
+			{
+				xr::swapchain & swapchain_ref = get_swapchain(depth_format, width, height, 1, views.size());
+
+				int depth_image_index = swapchain_ref.acquire();
+				vk::Image image = swapchain_ref.image(depth_image_index);
+				swapchain_ref.wait();
+				return {swapchain_ref, image};
+			}
+			else
+				return {};
+		}();
+		depth_swapchain = depth_swapchain_handle;
+		depth_image = depth_image_handle;
+	}
 
 	for (auto && [index, view]: utils::enumerate(views))
 	{
@@ -198,12 +246,12 @@ void scene::render_world(
 		        .pose = view.pose,
 		        .fov = view.fov,
 		        .subImage = {
-		                .swapchain = color_swapchain,
+		                .swapchain = use_separate_eye_swapchains ? XR_NULL_HANDLE : color_swapchain,
 		                .imageRect = {
 		                        .offset = {0, 0},
 		                        .extent = {(int)width, (int)height},
 		                },
-		                .imageArrayIndex = (uint32_t)index,
+		                .imageArrayIndex = use_separate_eye_swapchains ? 0u : (uint32_t)index,
 		        },
 		});
 
@@ -212,17 +260,17 @@ void scene::render_world(
 			composition_layer_depth.push_back({
 			        .type = XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR,
 			        .subImage = {
-			                .swapchain = depth_swapchain,
+			                .swapchain = use_separate_eye_swapchains ? XR_NULL_HANDLE : depth_swapchain,
 			                .imageRect = {
 			                        .offset = {0, 0},
 			                        .extent = {(int)width, (int)height},
 			                },
-			                .imageArrayIndex = (uint32_t)index,
-			        },
-			        .minDepth = 0,
-			        .maxDepth = 1,
-			        .nearZ = std::bit_cast<float>(0x7f800000), // infinity
-			        .farZ = constants::lobby::near_plane,
+		                .imageArrayIndex = use_separate_eye_swapchains ? 0u : (uint32_t)index,
+		        },
+		        .minDepth = 0,
+		        .maxDepth = 1,
+		        .nearZ = std::bit_cast<float>(0x7f800000), // infinity
+		        .farZ = constants::lobby::near_plane,
 			});
 			static_assert(std::numeric_limits<float>::is_iec559);
 		}
@@ -230,17 +278,55 @@ void scene::render_world(
 
 	// TODO: compute transforms only once
 
-	renderer->render(
-	        world,
-	        {clear_color.r, clear_color.g, clear_color.b, clear_color.a},
-	        layer_mask,
-	        vk::Extent2D{width, height},
-	        swapchain_format,
-	        depth_format,
-	        color_image,
-	        depth_image,
-	        frames,
-	        render_debug_draws);
+	if (use_separate_eye_swapchains)
+	{
+		for (auto && [index, frame]: utils::enumerate(frames))
+		{
+			xr::swapchain & eye_color_swapchain = get_swapchain(swapchain_format, width, height, 1, 1);
+			int color_image_index = eye_color_swapchain.acquire();
+			vk::Image eye_color_image = eye_color_swapchain.image(color_image_index);
+			eye_color_swapchain.wait();
+			vk::Image eye_depth_image{};
+
+			composition_layer_color[index].subImage.swapchain = eye_color_swapchain;
+			composition_layer_color[index].subImage.imageArrayIndex = 0;
+
+			if (keep_depth_buffer)
+			{
+				xr::swapchain & eye_depth_swapchain = get_swapchain(depth_format, width, height, 1, 1);
+				int depth_image_index = eye_depth_swapchain.acquire();
+				eye_depth_image = eye_depth_swapchain.image(depth_image_index);
+				eye_depth_swapchain.wait();
+
+				composition_layer_depth[index].subImage.swapchain = eye_depth_swapchain;
+				composition_layer_depth[index].subImage.imageArrayIndex = 0;
+			}
+
+			renderer->render(
+			        world,
+			        {clear_color.r, clear_color.g, clear_color.b, clear_color.a},
+			        layer_mask,
+			        vk::Extent2D{width, height},
+			        swapchain_format,
+			        depth_format,
+			        eye_color_image,
+			        eye_depth_image,
+			        std::span{&frame, 1},
+			        render_debug_draws);
+		}
+	}
+	else
+		renderer->render(
+		        world,
+		        {clear_color.r, clear_color.g, clear_color.b, clear_color.a},
+		        layer_mask,
+		        vk::Extent2D{width, height},
+		        swapchain_format,
+		        depth_format,
+		        color_image,
+		        depth_image,
+		        frames,
+		        render_debug_draws);
 
 	add_projection_layer(
 	        XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT,

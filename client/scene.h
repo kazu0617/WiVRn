@@ -40,6 +40,8 @@
 #include <vector>
 #include <openxr/openxr.h>
 
+bool stereo_eye_split_enabled();
+
 // See http://www.nirfriedman.com/2018/04/29/unforgettable-factory/
 // for automatic registration of scenes
 
@@ -190,7 +192,8 @@ protected:
 	        bool keep_depth_buffer,
 	        uint32_t layer_mask,
 	        XrColor4f clear_color,
-	        bool render_debug_draws = false);
+	        bool render_debug_draws = false,
+	        bool separate_eye_swapchains = false);
 
 	void set_color_scale_bias(XrColor4f scale, XrColor4f bias);
 	void set_depth_test(bool write, XrCompareOpFB op);

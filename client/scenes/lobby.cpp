@@ -1106,6 +1106,8 @@ void scenes::lobby::render(const XrFrameState & frame_state)
 		}
 	}
 
+	const bool separate_eye_swapchains = stereo_eye_split_enabled() and not composition_layer_depth_test_supported;
+
 	render_world(
 	        XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT,
 	        world_space,
@@ -1114,7 +1116,9 @@ void scenes::lobby::render(const XrFrameState & frame_state)
 	        height,
 	        composition_layer_depth_test_supported,
 	        composition_layer_depth_test_supported ? layer_rays : layer_rays | layer_controllers,
-	        {0, 0, 0, 0});
+	        {0, 0, 0, 0},
+	        false,
+	        separate_eye_swapchains);
 
 	if (composition_layer_depth_test_supported)
 		set_depth_test(true, XR_COMPARE_OP_LESS_OR_EQUAL_FB);
