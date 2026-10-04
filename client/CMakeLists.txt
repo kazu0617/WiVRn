@@ -264,6 +264,57 @@ else()
     install(DIRECTORY "${ASSETS_DIR}" DESTINATION "${CMAKE_INSTALL_DATADIR}/wivrn")
 endif()
 
+option(WIVRN_STEAM_FRAME_CONTROLLER_PROFILE
+    "Generate and select the Steam Frame controller profile from local SteamVR assets"
+    OFF)
+set(WIVRN_STEAM_FRAME_RENDERMODELS_DIR
+    "/opt/steamvr/drivers/frame_controller/resources/rendermodels"
+    CACHE PATH "SteamVR Steam Frame render-model source directory")
+
+if(WIVRN_STEAM_FRAME_CONTROLLER_PROFILE)
+    if(ANDROID)
+        message(FATAL_ERROR "WIVRN_STEAM_FRAME_CONTROLLER_PROFILE is supported by the Linux client only")
+    endif()
+
+    if(NOT IS_DIRECTORY "${WIVRN_STEAM_FRAME_RENDERMODELS_DIR}/frame_controller_left" OR
+       NOT IS_DIRECTORY "${WIVRN_STEAM_FRAME_RENDERMODELS_DIR}/frame_controller_right")
+        message(FATAL_ERROR
+            "Steam Frame render models were not found under '${WIVRN_STEAM_FRAME_RENDERMODELS_DIR}'. "
+            "Set WIVRN_STEAM_FRAME_RENDERMODELS_DIR to the local SteamVR rendermodels directory.")
+    endif()
+
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+    set(STEAM_FRAME_PROFILE_DIR "${ASSETS_DIR}/controllers/steam-frame")
+    set(STEAM_FRAME_PROFILE_FILES
+        "${STEAM_FRAME_PROFILE_DIR}/profile.json"
+        "${STEAM_FRAME_PROFILE_DIR}/frame_controller_left.glb"
+        "${STEAM_FRAME_PROFILE_DIR}/frame_controller_right.glb")
+    set(STEAM_FRAME_PROFILE_STAMP "${CMAKE_CURRENT_BINARY_DIR}/steam-frame-controller-assets.stamp")
+
+    file(GLOB_RECURSE STEAM_FRAME_RENDERMODEL_FILES
+        CONFIGURE_DEPENDS LIST_DIRECTORIES FALSE
+        "${WIVRN_STEAM_FRAME_RENDERMODELS_DIR}/frame_controller_left/*"
+        "${WIVRN_STEAM_FRAME_RENDERMODELS_DIR}/frame_controller_right/*")
+
+    add_custom_command(OUTPUT ${STEAM_FRAME_PROFILE_FILES} "${STEAM_FRAME_PROFILE_STAMP}"
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${STEAM_FRAME_PROFILE_DIR}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_steam_frame_controller.py"
+            --source-root "${WIVRN_STEAM_FRAME_RENDERMODELS_DIR}"
+            --output "${STEAM_FRAME_PROFILE_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E touch "${STEAM_FRAME_PROFILE_STAMP}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_steam_frame_controller.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/frame_controller_png.py"
+            ${STEAM_FRAME_RENDERMODEL_FILES}
+        COMMENT "Generating Steam Frame controller models from local SteamVR assets"
+        VERBATIM)
+
+    add_custom_target(wivrn_steam_frame_controller_assets DEPENDS "${STEAM_FRAME_PROFILE_STAMP}")
+    add_dependencies(wivrn wivrn_steam_frame_controller_assets)
+    target_compile_definitions(wivrn PRIVATE WIVRN_DEFAULT_CONTROLLER_PROFILE_STEAM_FRAME)
+endif()
+
 
 ##############################################################################
 # Internationalization
