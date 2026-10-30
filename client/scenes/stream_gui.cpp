@@ -1126,7 +1126,9 @@ void scenes::stream::draw_gui(XrTime predicted_display_time, XrDuration predicte
 			             height,
 			             true,
 			             layer_controllers,
-			             {});
+			             {},
+			             false,
+			             stereo_eye_split_enabled());
 			set_depth_test(true, XR_COMPARE_OP_ALWAYS_FB);
 		}
 	}
@@ -1151,7 +1153,9 @@ void scenes::stream::draw_gui(XrTime predicted_display_time, XrDuration predicte
 		             height,
 		             composition_layer_depth_test_supported,
 		             composition_layer_depth_test_supported ? layer_rays : layer_controllers | layer_rays,
-		             {});
+		             {},
+		             false,
+		             stereo_eye_split_enabled());
 		if (composition_layer_depth_test_supported)
 			set_depth_test(true, XR_COMPARE_OP_LESS_FB);
 	}

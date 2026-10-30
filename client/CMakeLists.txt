@@ -141,7 +141,12 @@ endif()
 ##############################################################################
 # Main sources
 #
+option(WIVRN_SEPARATE_EYE_SWAPCHAINS "Use per-eye swapchains for controller and ray projections" OFF)
+
 target_compile_definitions(wivrn PRIVATE "XR_USE_TIMESPEC=1")
+target_compile_definitions(wivrn PRIVATE
+    "WIVRN_SEPARATE_EYE_SWAPCHAINS=$<BOOL:${WIVRN_SEPARATE_EYE_SWAPCHAINS}>"
+)
 
 file(GLOB LOCAL_SOURCE CONFIGURE_DEPENDS
     "*.cpp"
