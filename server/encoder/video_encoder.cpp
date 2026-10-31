@@ -24,10 +24,18 @@
 
 #include "encoder_settings.h"
 #include "os/os_time.h"
+#include "util/u_logging.h"
 #include "utils/wivrn_trace.h"
 #include "wivrn_config.h"
 
+#include <algorithm>
+#include <charconv>
+#include <cstdlib>
+#include <limits>
+#include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #if WIVRN_USE_NVENC
 #include "video_encoder_nvenc.h"
@@ -46,6 +54,181 @@
 
 namespace wivrn
 {
+
+namespace
+{
+constexpr uint64_t video_pacing_min_bps = 1'000'000;
+constexpr uint64_t video_pacing_max_bps = 10'000'000'000;
+constexpr uint64_t video_pacing_default_delay_us = 1'000;
+constexpr uint64_t video_pacing_max_delay_us = 5'000;
+constexpr int64_t video_pacing_deadline_guard_ns = 5'000'000;
+constexpr size_t video_pacing_max_frames = 64;
+constexpr uint64_t video_pacing_bits_per_second = 8'000'000'000;
+
+struct video_pacing_config
+{
+	uint64_t bitrate_bps;
+	int64_t max_delay_ns;
+};
+
+template <typename T>
+std::optional<T> parse_unsigned_decimal(const char * raw, T minimum, T maximum)
+{
+	if (not raw or not *raw)
+		return std::nullopt;
+
+	std::string_view text(raw);
+	for (char c: text)
+		if (c < '0' or c > '9')
+			return std::nullopt;
+
+	T value{};
+	auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value, 10);
+	if (error != std::errc{} or end != text.data() + text.size() or value < minimum or value > maximum)
+		return std::nullopt;
+
+	return value;
+}
+
+const std::optional<video_pacing_config> & get_video_pacing_config()
+{
+	static const std::optional<video_pacing_config> config = []() -> std::optional<video_pacing_config> {
+		const char * raw_bps = std::getenv("WIVRN_VIDEO_PACING_BPS");
+		if (not raw_bps)
+			return std::nullopt;
+
+		auto bitrate = parse_unsigned_decimal(raw_bps, video_pacing_min_bps, video_pacing_max_bps);
+		if (not bitrate)
+		{
+			U_LOG_W("Invalid WIVRN_VIDEO_PACING_BPS; UDP video pacing disabled (expected 1000000..10000000000)");
+			return std::nullopt;
+		}
+
+		uint64_t max_delay_us = video_pacing_default_delay_us;
+		if (const char * raw_delay = std::getenv("WIVRN_VIDEO_PACING_MAX_DELAY_US"))
+		{
+			auto parsed = parse_unsigned_decimal(raw_delay, uint64_t(1), video_pacing_max_delay_us);
+			if (not parsed)
+			{
+				U_LOG_W("Invalid WIVRN_VIDEO_PACING_MAX_DELAY_US; UDP video pacing disabled (expected 1..5000)");
+				return std::nullopt;
+			}
+			max_delay_us = *parsed;
+		}
+
+		return video_pacing_config{
+		        .bitrate_bps = *bitrate,
+		        .max_delay_ns = int64_t(max_delay_us * 1'000),
+		};
+	}();
+
+	return config;
+}
+
+std::optional<int64_t> to_server_deadline(const clock_offset & offset, XrTime display_time)
+{
+	if (not offset or display_time <= 0)
+		return std::nullopt;
+
+	if ((offset.b > 0 and display_time < std::numeric_limits<int64_t>::min() + offset.b) or
+	    (offset.b < 0 and display_time > std::numeric_limits<int64_t>::max() + offset.b))
+		return std::nullopt;
+
+	const int64_t deadline = display_time - offset.b;
+	if (deadline <= 0)
+		return std::nullopt;
+	return deadline;
+}
+
+class video_pacing_coordinator
+{
+	struct frame_state
+	{
+		int64_t start_ns;
+		int64_t deadline_ns;
+		uint64_t bytes_sent = 0;
+	};
+
+	std::mutex mutex;
+	std::map<std::pair<uint64_t, XrTime>, frame_state> frames;
+
+public:
+	bool pace_shard(uint64_t frame_idx,
+	                XrTime display_time,
+	                int64_t deadline_ns,
+	                size_t serialized_bytes,
+	                const video_pacing_config & config)
+	{
+		const int64_t now_ns = os_monotonic_get_ns();
+		int64_t release_at_ns = now_ns;
+		{
+			std::unique_lock lock(mutex);
+			auto key = std::pair{frame_idx, display_time};
+			auto it = frames.find(key);
+			if (it == frames.end())
+			{
+				// Drop only expired frame records. If the bounded table is full,
+				// fail open for this frame instead of evicting a live shared budget.
+				const int64_t stale_deadline_ns = now_ns > video_pacing_deadline_guard_ns
+				                                          ? now_ns - video_pacing_deadline_guard_ns
+				                                          : 0;
+				for (auto stale = frames.begin(); stale != frames.end();)
+				{
+					if (stale->second.deadline_ns <= stale_deadline_ns)
+						stale = frames.erase(stale);
+					else
+						++stale;
+				}
+				if (frames.size() >= video_pacing_max_frames)
+					return false;
+
+				it = frames.emplace(key, frame_state{
+				                                 .start_ns = now_ns,
+				                                 .deadline_ns = deadline_ns,
+				                                 .bytes_sent = 0,
+				                         })
+				             .first;
+			}
+
+			auto & frame = it->second;
+			frame.deadline_ns = std::min(frame.deadline_ns, deadline_ns);
+
+			// Use cumulative serialized application bytes from every stream that
+			// shares this frame key. The cap is measured from the first shard.
+			const uint64_t capped_bytes = uint64_t(
+			        (uint64_t(config.max_delay_ns) * config.bitrate_bps + video_pacing_bits_per_second - 1) /
+			        video_pacing_bits_per_second);
+			const int64_t scheduled_delay_ns = frame.bytes_sent >= capped_bytes
+			                                           ? config.max_delay_ns
+			                                           : int64_t((frame.bytes_sent * video_pacing_bits_per_second) / config.bitrate_bps);
+			const int64_t scheduled_at_ns = frame.start_ns + scheduled_delay_ns;
+			const int64_t deadline_cutoff_ns = frame.deadline_ns - video_pacing_deadline_guard_ns;
+			if (scheduled_at_ns > now_ns and scheduled_at_ns <= deadline_cutoff_ns)
+				release_at_ns = scheduled_at_ns;
+
+			if (serialized_bytes > std::numeric_limits<uint64_t>::max() - frame.bytes_sent)
+				frame.bytes_sent = std::numeric_limits<uint64_t>::max();
+			else
+				frame.bytes_sent += serialized_bytes;
+		}
+
+		// Never hold the shared-state lock while sleeping. OS scheduler overshoot
+		// can exceed the nominal cap or deadline reserve by an unbounded amount.
+		if (release_at_ns > now_ns)
+		{
+			std::this_thread::sleep_for(std::chrono::nanoseconds(release_at_ns - now_ns));
+			return true;
+		}
+		return false;
+	}
+};
+
+video_pacing_coordinator & pacing_coordinator()
+{
+	static video_pacing_coordinator coordinator;
+	return coordinator;
+}
+} // namespace
 
 video_encoder::sender::sender() :
         thread([this](std::stop_token t) {
@@ -272,6 +455,10 @@ void video_encoder::encode(wivrn_session & cnx,
 		shared_sender->wait_idle(this);
 	this->cnx = &cnx;
 	clock = cnx.get_offset();
+	pacing_display_time = view_info.display_time;
+	pacing_deadline_ns.reset();
+	if (shared_sender and get_video_pacing_config())
+		pacing_deadline_ns = to_server_deadline(clock, pacing_display_time);
 
 	wivrn::trace::scope trace_encode(wivrn::trace::cpu_track::encoder, stream_idx, frame_index, "encode");
 	auto encode_begin = os_monotonic_get_ns();
@@ -317,6 +504,7 @@ void video_encoder::SendData(std::span<uint8_t> data, bool end_of_frame, bool co
 
 	auto begin = data.begin();
 	auto end = data.end();
+	bool pacing_waited = false;
 	while (begin != end)
 	{
 		const size_t payload_size = std::max(0z, max_payload_size - ssize_t(serialized_size(shard.view_info)));
@@ -332,6 +520,25 @@ void video_encoder::SendData(std::span<uint8_t> data, bool end_of_frame, bool co
 			}
 		}
 		shard.payload = {begin, next};
+		if (not control and cnx->has_stream() and shared_sender and pacing_deadline_ns)
+		{
+			if (const auto & config = get_video_pacing_config())
+			{
+				const bool waited = pacing_coordinator().pace_shard(shard.frame_idx,
+				                                                    pacing_display_time,
+				                                                    *pacing_deadline_ns,
+				                                                    serialized_size(shard),
+				                                                    *config);
+				pacing_waited = pacing_waited or waited;
+			}
+		}
+		if (end_of_frame and next == end and pacing_waited)
+		{
+			// Include opt-in pacing waits in the timing sent with the final shard.
+			// This field is fixed width, so refreshing it does not change packet size.
+			timing_info.send_end = clock.to_headset(os_monotonic_get_ns());
+			shard.timing_info = timing_info;
+		}
 		try
 		{
 			if (control)
