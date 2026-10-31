@@ -52,6 +52,7 @@
 #include <simdjson.h>
 #include <spdlog/spdlog.h>
 #include <string>
+#include <string_view>
 #include <sys/poll.h>
 #include <vulkan/vulkan_raii.hpp>
 
@@ -1090,7 +1091,9 @@ void scenes::lobby::render(const XrFrameState & frame_state)
 	        composition_layer_depth_test_supported,
 	        composition_layer_depth_test_supported ? layer_lobby | layer_controllers : layer_lobby,
 	        clear_color,
-	        true);
+	        true,
+	        false,
+	        "lobby.main");
 
 	if (composition_layer_depth_test_supported)
 		set_depth_test(true, XR_COMPARE_OP_ALWAYS_FB);
@@ -1106,6 +1109,8 @@ void scenes::lobby::render(const XrFrameState & frame_state)
 		}
 	}
 
+	const bool separate_eye_swapchains = stereo_eye_split_enabled();
+
 	render_world(
 	        XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT,
 	        world_space,
@@ -1114,7 +1119,10 @@ void scenes::lobby::render(const XrFrameState & frame_state)
 	        height,
 	        composition_layer_depth_test_supported,
 	        composition_layer_depth_test_supported ? layer_rays : layer_rays | layer_controllers,
-	        {0, 0, 0, 0});
+	        {0, 0, 0, 0},
+	        false,
+	        separate_eye_swapchains,
+	        "lobby.hand-rays");
 
 	if (composition_layer_depth_test_supported)
 		set_depth_test(true, XR_COMPARE_OP_LESS_OR_EQUAL_FB);

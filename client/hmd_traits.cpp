@@ -318,6 +318,9 @@ void hmd_traits::init()
 		}
 	}
 #else // not android
+	// The Steam Frame package bundles this profile. WIVRN_CONTROLLER_PROFILE can override it.
+	controller_profile = "steam-frame";
+
 	for (const auto & entry: std::filesystem::directory_iterator("/sys/class/drm"))
 	{
 		std::ifstream modes(entry.path() / "modes");

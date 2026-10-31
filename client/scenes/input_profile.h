@@ -25,6 +25,7 @@
 #include <glm/glm.hpp>
 #include <magic_enum_containers.hpp>
 #include <span>
+#include <string_view>
 #include <xr/space.h>
 #include <openxr/openxr.h>
 
@@ -50,3 +51,9 @@ struct input_profile
 	        bool hide_right_ray,
 	        std::span<glm::mat4> world_to_window);
 };
+
+void log_controller_stereo_diagnostics(
+        entt::registry & scene,
+        std::span<const glm::mat4> eye_view_projections,
+        std::string_view mode_name,
+        std::string_view mode_context);

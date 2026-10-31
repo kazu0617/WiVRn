@@ -23,6 +23,7 @@
 #include "utils/mapped_file.h"
 #include "xr/space.h"
 #include <array>
+#include <cmath>
 #include <entt/entity/fwd.hpp>
 #include <entt/entt.hpp>
 #include <glm/gtc/matrix_access.hpp>
@@ -95,7 +96,15 @@ const std::unordered_map<std::string, std::string> input_mappings = {
 	{"b-button"              , "/input/b/click"          },
 	{"x-button"              , "/input/x/click"          },
 	{"y-button"              , "/input/y/click"          },
-	{"thumbrest"             , "/input/thumbrest/touch"  },
+	{"frame-dpad-up"         , "/input/dpad_up/click"     },
+	{"frame-dpad-down"       , "/input/dpad_down/click"   },
+	{"frame-dpad-left"       , "/input/dpad_left/click"   },
+	{"frame-dpad-right"      , "/input/dpad_right/click"  },
+	{"frame-bumper"          , "/input/bumper/click"      },
+	{"frame-menu"            , "/input/menu/click"        },
+	{"frame-view"            , "/input/view/click"        },
+	{"frame-system"          , "/input/system/click"      },
+	{"thumbrest"             , "/input/thumbrest/touch"   },
 };
 // clang-format on
 
@@ -527,5 +536,61 @@ void input_profile::apply(
 		        copy_results.out,
 		        data.window_to_world.size() - nb_windows,
 		        glm::mat4{/* TODO */});
+	}
+}
+
+void log_controller_stereo_diagnostics(
+        entt::registry & scene,
+        std::span<const glm::mat4> eye_view_projections,
+        std::string_view mode_name,
+        std::string_view mode_context)
+{
+	for (auto && [entity, node, bound]: scene.view<components::node, components::bound_space>().each())
+	{
+		if (bound.space != xr::spaces::grip_left and bound.space != xr::spaces::grip_right and
+		    bound.space != xr::spaces::aim_left and bound.space != xr::spaces::aim_right)
+			continue;
+
+		const glm::vec4 model_origin = node.transform_to_root * glm::vec4(0, 0, 0, 1);
+		spdlog::info("StereoDiag mode={} context={} controller={} node_id={} node={} visibleLocal={} visibleGlobal={} layerMask=0x{:x}/0x{:x} localPose=({:.6f},{:.6f},{:.6f};{:.6f},{:.6f},{:.6f},{:.6f}) worldOrigin=({:.6f},{:.6f},{:.6f},{:.6f})",
+		             mode_name,
+		             mode_context,
+		             magic_enum::enum_name(bound.space),
+		             static_cast<std::uint32_t>(entity),
+		             node.name,
+		             node.visible,
+		             node.global_visible,
+		             node.layer_mask,
+		             node.global_layer_mask,
+		             node.position.x,
+		             node.position.y,
+		             node.position.z,
+		             node.orientation.x,
+		             node.orientation.y,
+		             node.orientation.z,
+		             node.orientation.w,
+		             model_origin.x,
+		             model_origin.y,
+		             model_origin.z,
+		             model_origin.w);
+
+		for (size_t eye = 0; eye < eye_view_projections.size(); ++eye)
+		{
+			const glm::vec4 clip = eye_view_projections[eye] * model_origin;
+			const float inverse_w = std::abs(clip.w) > 1.e-8f ? 1.f / clip.w : 0.f;
+			spdlog::info("StereoDiag mode={} context={} controller={} node_id={} eye={} clipOrigin=({:.6f},{:.6f},{:.6f},{:.6f}) ndcOrigin=({:.6f},{:.6f},{:.6f})",
+			             mode_name,
+			             mode_context,
+			             magic_enum::enum_name(bound.space),
+			             static_cast<std::uint32_t>(entity),
+			             eye,
+			             clip.x,
+			             clip.y,
+			             clip.z,
+			             clip.w,
+			             clip.x * inverse_w,
+			             clip.y * inverse_w,
+			             clip.z * inverse_w);
+		}
 	}
 }

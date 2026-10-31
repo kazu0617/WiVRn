@@ -36,9 +36,15 @@
 #include <functional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <openxr/openxr.h>
+
+bool stereo_eye_split_enabled();
+bool stereo_controller_diagnostics_enabled();
+bool stereo_controller_diagnostic_sample(std::string_view mode_name, std::string_view mode_context = {});
+bool stereo_controller_diagnostic_transition(std::string_view mode_name, std::uint64_t state);
 
 // See http://www.nirfriedman.com/2018/04/29/unforgettable-factory/
 // for automatic registration of scenes
@@ -190,7 +196,10 @@ protected:
 	        bool keep_depth_buffer,
 	        uint32_t layer_mask,
 	        XrColor4f clear_color,
-	        bool render_debug_draws = false);
+	        bool render_debug_draws = false,
+	        bool separate_eye_swapchains = false,
+	        std::string_view mode_name = "render_world",
+	        std::string_view mode_context = {});
 
 	void set_color_scale_bias(XrColor4f scale, XrColor4f bias);
 	void set_depth_test(bool write, XrCompareOpFB op);

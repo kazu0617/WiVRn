@@ -704,6 +704,7 @@ void scenes::stream::draw_gui(XrTime predicted_display_time, XrDuration predicte
 
 	float alpha = 1;
 	bool is_urgent = false;
+	bool hidden_gui_faded_out = false;
 	if (gui_status == stream_tab::hidden)
 	{
 		auto toast = gui_toast.lock();
@@ -718,9 +719,45 @@ void scenes::stream::draw_gui(XrTime predicted_display_time, XrDuration predicte
 		if (alpha == 0)
 		{
 			toast->reset();
-			return;
+			hidden_gui_faded_out = true;
 		}
 	}
+
+	// This state-transition log runs even for hidden tabs and before the faded-out early exit.
+	// The two projection flags mirror the branches below: controllers get a separate
+	// projection only with depth testing, otherwise they are included in the ray pass.
+	const std::string_view tab_context = magic_enum::enum_name(gui_status);
+	const bool render_gui = not hidden_gui_faded_out;
+	const bool gui_visible = alpha > 0.f and render_gui;
+	const bool controllers_enabled = interactable and not recentering_context;
+	const bool controller_projection_will_run = render_gui and interactable and composition_layer_depth_test_supported;
+	const bool ray_projection_will_run = render_gui and interactable;
+	const bool controller_in_ray_pass = render_gui and interactable and not composition_layer_depth_test_supported;
+	const std::uint64_t diagnostic_state = static_cast<std::uint64_t>(gui_status) |
+	                                       (std::uint64_t(gui_visible) << 8) |
+	                                       (std::uint64_t(hidden_gui_faded_out) << 9) |
+	                                       (std::uint64_t(interactable) << 10) |
+	                                       (std::uint64_t(controllers_enabled) << 11) |
+	                                       (std::uint64_t(composition_layer_depth_test_supported) << 12) |
+	                                       (std::uint64_t(controller_projection_will_run) << 13) |
+	                                       (std::uint64_t(controller_in_ray_pass) << 14) |
+	                                       (std::uint64_t(ray_projection_will_run) << 15);
+	if (stereo_controller_diagnostic_transition("stream_gui.entry", diagnostic_state))
+	{
+		spdlog::info("stereo.gui-state render_path=client_gui decoded_video_render_path=false tab={} gui_visible={} alpha={:.3f} faded_out={} interactable={} controllers_enabled={} depth_test_ext_pair={} controller_projection_will_run={} controller_in_ray_pass={} ray_projection_will_run={}",
+		             magic_enum::enum_name(gui_status),
+		             gui_visible,
+		             alpha,
+		             hidden_gui_faded_out,
+		             interactable,
+		             controllers_enabled,
+		             composition_layer_depth_test_supported,
+		             controller_projection_will_run,
+		             controller_in_ray_pass,
+		             ray_projection_will_run);
+	}
+	if (hidden_gui_faded_out)
+		return;
 
 	// Lock the GUI position to the head, do it before displaying the GUI to avoid being off by one frame when gui_status changes
 	std::optional<std::pair<glm::vec3, glm::quat>> head_position = application::locate_controller(application::space(xr::spaces::view), world_space, predicted_display_time);
@@ -1108,6 +1145,20 @@ void scenes::stream::draw_gui(XrTime predicted_display_time, XrDuration predicte
 				hide_right_controller = true;
 		}
 
+		const std::string_view controller_state_mode = "stream_gui.controller-state";
+		if (stereo_controller_diagnostic_sample(controller_state_mode, tab_context))
+		{
+			spdlog::info("StereoDiag mode={} tab={} interactable={} gui_layers={} depth_ext={} hide_left_controller={} hide_right_controller={} recentering={}",
+			             controller_state_mode,
+			             tab_context,
+			             interactable,
+			             layers.size(),
+			             composition_layer_depth_test_supported,
+			             hide_left_controller,
+			             hide_right_controller,
+			             bool(recentering_context));
+		}
+
 		input->apply(world,
 		             world_space,
 		             predicted_display_time,
@@ -1127,7 +1178,11 @@ void scenes::stream::draw_gui(XrTime predicted_display_time, XrDuration predicte
 			             height,
 			             true,
 			             layer_controllers,
-			             {});
+			             {},
+			             false,
+			             stereo_eye_split_enabled(),
+			             "stream_gui.controllers",
+			             tab_context);
 			set_depth_test(true, XR_COMPARE_OP_ALWAYS_FB);
 		}
 	}
@@ -1152,7 +1207,11 @@ void scenes::stream::draw_gui(XrTime predicted_display_time, XrDuration predicte
 		             height,
 		             composition_layer_depth_test_supported,
 		             composition_layer_depth_test_supported ? layer_rays : layer_controllers | layer_rays,
-		             {});
+		             {},
+		             false,
+		             stereo_eye_split_enabled(),
+		             "stream_gui.rays",
+		             tab_context);
 		if (composition_layer_depth_test_supported)
 			set_depth_test(true, XR_COMPARE_OP_LESS_FB);
 	}
