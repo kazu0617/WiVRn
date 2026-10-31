@@ -30,6 +30,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vulkan/vulkan_raii.hpp>
 
@@ -104,6 +105,8 @@ private:
 
 	to_headset::video_stream_data_shard::timing_info_t timing_info;
 	clock_offset clock;
+	XrTime pacing_display_time = 0;
+	std::optional<int64_t> pacing_deadline_ns;
 
 	std::ofstream video_dump;
 
