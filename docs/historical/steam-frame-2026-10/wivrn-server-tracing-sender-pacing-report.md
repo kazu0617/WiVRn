@@ -1,0 +1,10 @@
+# WiVRn tracing + sender-pacing build
+
+- Source base: `fc48b6155ebb4fd658ddb8f8b2006086659747e4`, detached scratch tree `work/wivrn-tracing`, with the three PKGBUILD patches listed in `wivrn-tracing-baseline-report.md` and the compositor `instant_feedback` argument-order fix.
+- Sender-pacing patch: applied and reverse-apply check passed. The patch file was initially SHA-256 `f33a1ccb7e330124d383dcf54c3952c20e3a4a96e2e118fe14d3a15f5f959a2b`; sender confirmed the intended fail-open `return false;` correction and updated the artifact, now SHA-256 `736dceff756236d2ef31038b52d30c627dec84a02edd9aba57bbb06ac89525e0`. The corrected artifact reverse-applies cleanly to the completed worktree.
+- Build configuration: Release, `WIVRN_USE_PERFETTO=ON`, local SDK `work/perfetto-sdk-v58.2/sdk`, `WIVRN_TRACE_MONADO=OFF`, client/server-library/dashboard/wivrnctl/tests off.
+- The first incremental attempt failed because `video_pacing_coordinator::pace_shard` returned without a value from a `bool` function when its frame table was full. The sender owner confirmed fail-open `return false;` is intended; after that one-line fix, the low-priority build (`nice -n 19 ionice -c3`, `--parallel 2`) completed with exit 0 and linked `wivrn-server`.
+- Binary: `work/wivrn-server-tracing-sender-pacing`; SHA-256 `98256539d0a9ece197b891fb56a8ea7fea9052a76965285532d9c579cfcd0dc0`. Safe smoke: `--version` prints `WiVRn version fc48b61`. Embedded strings include `WIVRN_VIDEO_PACING_BPS`, `WIVRN_VIDEO_PACING_MAX_DELAY_US`, and Perfetto trace markers.
+- Logs: first failed attempt `work/wivrn-sender-pacing-build.log`; successful retry `work/wivrn-sender-pacing-rebuild.log`.
+
+Controlled pacing is opt-in: unset `WIVRN_VIDEO_PACING_BPS` disables it; set it to an integer from 1,000,000 through 10,000,000,000 bps. Optional `WIVRN_VIDEO_PACING_MAX_DELAY_US` accepts 1–5000 and defaults to 1000. Tracing can be enabled separately with `WIVRN_TRACING=inprocess` and a writable `WIVRN_TRACING_FILE` path as described in the baseline report. No runtime, service, device, package, or system-binary operation was performed.

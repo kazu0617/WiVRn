@@ -1,0 +1,11 @@
+{
+  "upstream": "https://gitlab.freedesktop.org/monado/monado.git",
+  "base": "09741cbcb45236f4f4f79790ea133cd90d68d5eb",
+  "historical_head": "0eeb2d85c6c3ca515a3d56d4e9485316a6f0c9cb",
+  "historical_tree": "a1aebaffd273cb48d5d705f0812d3ad5689a2941",
+  "patches": 12,
+  "recovery": [
+    "git checkout 09741cbcb45236f4f4f79790ea133cd90d68d5eb",
+    "git am /path/to/monado-patches/*.patch"
+  ]
+}
